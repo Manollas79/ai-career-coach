@@ -21,6 +21,12 @@ export default function Quiz() {
   const [currentQuestion, setCurrentQuestion] = useState(0);
   const [answers, setAnswers] = useState([]);
   const [showExplanation, setShowExplanation] = useState(false);
+  const [quizType, setQuizType] = useState("technical");
+  const [numQuestions, setNumQuestions] = useState(10);
+  const [timeLimit, setTimeLimit] = useState(15); // in minutes
+  const [timeLeft, setTimeLeft] = useState(null); // in seconds
+  const [timerActive, setTimerActive] = useState(false);
+  const [autoSubmitted, setAutoSubmitted] = useState(false);
 
   const {
     loading: generatingQuiz,
@@ -38,8 +44,32 @@ export default function Quiz() {
   useEffect(() => {
     if (quizData) {
       setAnswers(new Array(quizData.length).fill(null));
+      if (timeLimit) {
+        setTimeLeft(timeLimit * 60);
+        setTimerActive(true);
+        setAutoSubmitted(false);
+      }
     }
-  }, [quizData]);
+  }, [quizData, timeLimit]);
+
+  useEffect(() => {
+    if (!timerActive || timeLeft === null) return;
+
+    if (timeLeft <= 0) {
+      setTimerActive(false);
+      if (!autoSubmitted && quizData && !resultData) {
+        setAutoSubmitted(true);
+        finishQuiz();
+      }
+      return;
+    }
+
+    const interval = setInterval(() => {
+      setTimeLeft((prev) => (prev !== null ? prev - 1 : prev));
+    }, 1000);
+
+    return () => clearInterval(interval);
+  }, [timerActive, timeLeft, autoSubmitted, quizData, resultData]);
 
   const handleAnswer = (answer) => {
     const newAnswers = [...answers];
@@ -67,6 +97,8 @@ export default function Quiz() {
   };
 
   const finishQuiz = async () => {
+    if (!quizData || resultData) return;
+
     const score = calculateScore();
     try {
       await saveQuizResultFn(quizData, answers, score);
@@ -80,8 +112,10 @@ export default function Quiz() {
     setCurrentQuestion(0);
     setAnswers([]);
     setShowExplanation(false);
-    generateQuizFn();
     setResultData(null);
+    setTimeLeft(null);
+    setTimerActive(false);
+    setAutoSubmitted(false);
   };
 
   if (generatingQuiz) {
@@ -104,13 +138,92 @@ export default function Quiz() {
           <CardTitle>Ready to test your knowledge?</CardTitle>
         </CardHeader>
         <CardContent>
-          <p className="text-muted-foreground">
-            This quiz contains 10 questions specific to your industry and
-            skills. Take your time and choose the best answer for each question.
+          <p className="text-muted-foreground mb-4">
+            Configure your quiz and let the AI generate tailored questions based
+            on your profile.
           </p>
+
+          <div className="space-y-4">
+            <div>
+              <Label className="mb-2 block">Quiz Type</Label>
+              <RadioGroup
+                value={quizType}
+                onValueChange={setQuizType}
+                className="grid grid-cols-2 gap-2"
+              >
+                {[
+                  "technical",
+                  "aptitude",
+                  "verbal",
+                  "analytical",
+                  "behavioral",
+                ].map((type) => (
+                  <div
+                    key={type}
+                    className="flex items-center space-x-2 border rounded-md px-3 py-2"
+                  >
+                    <RadioGroupItem value={type} id={`type-${type}`} />
+                    <Label
+                      htmlFor={`type-${type}`}
+                      className="capitalize cursor-pointer"
+                    >
+                      {type}
+                    </Label>
+                  </div>
+                ))}
+              </RadioGroup>
+            </div>
+
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <Label htmlFor="num-questions" className="mb-1 block">
+                  Number of Questions
+                </Label>
+                <select
+                  id="num-questions"
+                  className="w-full border rounded-md px-3 py-2 text-sm bg-background"
+                  value={numQuestions}
+                  onChange={(e) => setNumQuestions(Number(e.target.value))}
+                >
+                  {[5, 10, 15].map((n) => (
+                    <option key={n} value={n}>
+                      {n}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <Label htmlFor="time-limit" className="mb-1 block">
+                  Time Limit (minutes)
+                </Label>
+                <select
+                  id="time-limit"
+                  className="w-full border rounded-md px-3 py-2 text-sm bg-background"
+                  value={timeLimit}
+                  onChange={(e) => setTimeLimit(Number(e.target.value))}
+                >
+                  {[5, 10, 15, 20].map((n) => (
+                    <option key={n} value={n}>
+                      {n}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </div>
+          </div>
         </CardContent>
         <CardFooter>
-          <Button onClick={generateQuizFn} className="w-full">
+          <Button
+            onClick={() =>
+              generateQuizFn({
+                type: quizType,
+                numQuestions,
+                timeLimit,
+              })
+            }
+            className="w-full"
+          >
             Start Quiz
           </Button>
         </CardFooter>
@@ -119,6 +232,8 @@ export default function Quiz() {
   }
 
   const question = quizData[currentQuestion];
+  const minutes = timeLeft !== null ? Math.floor(timeLeft / 60) : 0;
+  const seconds = timeLeft !== null ? timeLeft % 60 : 0;
 
   return (
     <Card className="mx-2">
@@ -126,6 +241,12 @@ export default function Quiz() {
         <CardTitle>
           Question {currentQuestion + 1} of {quizData.length}
         </CardTitle>
+        {timeLeft !== null && (
+          <p className="text-sm text-muted-foreground mt-1">
+            Time remaining: {minutes.toString().padStart(2, "0")}:
+            {seconds.toString().padStart(2, "0")}
+          </p>
+        )}
       </CardHeader>
       <CardContent className="space-y-4">
         <p className="text-lg font-medium">{question.question}</p>

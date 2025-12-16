@@ -2,12 +2,11 @@
 
 import { db } from "@/lib/prisma";
 import { auth } from "@clerk/nextjs/server";
-import { GoogleGenerativeAI } from "@google/generative-ai";
+import { createGroqModel } from "@/lib/groqClient";
 
-const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+const model = createGroqModel();
 
-export async function generateQuiz() {
+export async function generateQuiz(config) {
   const { userId } = await auth();
   if (!userId) throw new Error("Unauthorized");
 
@@ -16,22 +15,36 @@ export async function generateQuiz() {
     select: {
       industry: true,
       skills: true,
+      experience: true,
     },
   });
 
   if (!user) throw new Error("User not found");
 
+  const quizType =
+    config?.type || "technical"; // technical | aptitude | verbal | analytical | behavioral
+  const numQuestions = config?.numQuestions || 10;
+
+  let difficulty = "intermediate";
+  if (typeof user.experience === "number") {
+    if (user.experience <= 1) difficulty = "beginner";
+    else if (user.experience >= 5) difficulty = "advanced";
+  }
+
   const prompt = `
-    Generate 10 technical interview questions for a ${
+    You are an AI that generates interview and aptitude quiz questions.
+
+    Generate ${numQuestions} ${quizType} questions for a ${
       user.industry
     } professional${
     user.skills?.length ? ` with expertise in ${user.skills.join(", ")}` : ""
-  }.
+  } at a ${difficulty} difficulty level.
     
-    Each question should be multiple choice with 4 options.
-    
-    Return the response in this JSON format only, no additional text:
+    Each question MUST be multiple choice with exactly 4 options.
+
+    The response MUST be valid JSON in the following format ONLY, with no additional text or markdown:
     {
+      "type": "technical | aptitude | verbal | analytical | behavioral",
       "questions": [
         {
           "question": "string",
@@ -41,6 +54,9 @@ export async function generateQuiz() {
         }
       ]
     }
+
+    - Set "type" to "${quizType}".
+    - Do NOT wrap the JSON in markdown code fences.
   `;
 
   try {
@@ -154,3 +170,76 @@ export async function getAssessments() {
     throw new Error("Failed to fetch assessments");
   }
 }
+
+export async function getSkillImprovementAnalysis() {
+  const { userId } = await auth();
+  if (!userId) throw new Error("Unauthorized");
+
+  const user = await db.user.findUnique({
+    where: { clerkUserId: userId },
+  });
+
+  if (!user) throw new Error("User not found");
+
+  const assessments = await db.assessment.findMany({
+    where: {
+      userId: user.id,
+    },
+    orderBy: {
+      createdAt: "asc",
+    },
+  });
+
+  if (!assessments.length) {
+    return null;
+  }
+
+  const questionSummaries = assessments
+    .flatMap((assessment, aIndex) =>
+      (assessment.questions || []).map((q, qIndex) => {
+        const question = q.question || "";
+        const isCorrect = q.isCorrect ? "correct" : "incorrect";
+        const explanation = q.explanation || "";
+
+        return `Assessment ${aIndex + 1}, Question ${qIndex + 1}:\nQuestion: "${question}"\nResult: ${isCorrect}\nExplanation: "${explanation}"`;
+      })
+    )
+    .join("\n\n");
+
+  const prompt = `
+    You are an expert interview and career coach analyzing quiz performance data.
+
+    Based on the following questions, whether they were answered correctly, and their explanations, infer:
+    - The user's strong skills and topics
+    - The user's weak skills and topics
+    - Specific topics that require improvement
+    - Recommended focus areas for upcoming interviews
+
+    Quiz data:
+    ${questionSummaries}
+
+    Return ONLY a valid JSON object in this exact format, with no additional text or markdown:
+    {
+      "strengths": ["string"],
+      "weakAreas": ["string"],
+      "topicsToImprove": ["string"],
+      "recommendedFocusAreas": ["string"]
+    }
+
+    - Keep each bullet concise and specific (e.g., "Good understanding of OOP concepts").
+    - Focus on practical, actionable insights.
+  `;
+
+  try {
+    const result = await model.generateContent(prompt);
+    const response = result.response;
+    const text = response.text();
+    const cleanedText = text.replace(/```(?:json)?\n?/g, "").trim();
+
+    return JSON.parse(cleanedText);
+  } catch (error) {
+    console.error("Error generating skill improvement analysis:", error);
+    return null;
+  }
+}
+
